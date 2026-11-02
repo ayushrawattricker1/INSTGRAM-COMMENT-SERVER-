@@ -216,219 +216,122 @@ PAGE_HTML = """
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>INSTAGRAM COMMENT PANEL</title>
-<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🚀 INSTAGRAM COMMENT PANEL</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --ink:#111111;
-  --paper:#f2f0e9;
-  --red:#d1361f;
-  --blue:#1c3f94;
-  --line:#111111;
-}
-html,body{height:100%}
-body{
-  font-family:'Inter',sans-serif;
-  background:var(--paper);
-  color:var(--ink);
-  min-height:100vh;
-}
-.wrap{ max-width:920px; margin:0 auto; padding:0 18px 60px; }
-
-/* ============ MASTHEAD ============ */
-.masthead{ padding:38px 0 22px; border-bottom:4px solid var(--ink); }
-.masthead .kicker{ font-family:'IBM Plex Mono',monospace; font-size:.72rem; letter-spacing:.18em; color:var(--red); text-transform:uppercase; margin-bottom:14px; }
-.masthead h1{ font-family:'Archivo Black',sans-serif; font-size:clamp(1.8rem,6vw,3rem); line-height:1.02; letter-spacing:-.01em; text-transform:uppercase; }
-.masthead .sub{ margin-top:10px; font-family:'IBM Plex Mono',monospace; font-size:.78rem; letter-spacing:.08em; color:var(--ink); opacity:.7; text-transform:uppercase; }
-
-/* ============ TOP STATUS STRIP ============ */
-.statusstrip{ display:grid; grid-template-columns:1fr 1fr; border-bottom:4px solid var(--ink); }
-.statuscell{ padding:16px 18px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.statuscell:first-child{ border-right:2px solid var(--ink); }
-.statuscell .label{ font-family:'IBM Plex Mono',monospace; font-size:.72rem; letter-spacing:.1em; text-transform:uppercase; opacity:.65; }
-.tag{
-  font-family:'IBM Plex Mono',monospace; font-size:.72rem; font-weight:700; letter-spacing:.06em;
-  padding:5px 10px; border:2px solid var(--ink); text-transform:uppercase; background:var(--paper);
-}
-.tag.error{ background:var(--red); color:#fff; border-color:var(--ink); }
-.tag.ready,.tag.running{ background:var(--blue); color:#fff; border-color:var(--ink); }
-
-/* ============ MODULE ============ */
-.module{ display:grid; grid-template-columns:76px 1fr; border-bottom:4px solid var(--ink); }
-.module .idx{
-  font-family:'Archivo Black',sans-serif; font-size:2.4rem; color:var(--red);
-  border-right:2px solid var(--ink); padding:26px 10px; text-align:center; align-self:stretch;
-}
-.module .body{ padding:26px 20px 30px; }
-.module h2{ font-family:'Archivo Black',sans-serif; font-size:1.3rem; text-transform:uppercase; letter-spacing:.01em; margin-bottom:20px; }
-
-/* ============ FORM ============ */
-.field{ margin-bottom:20px; }
-.field:last-child{ margin-bottom:0; }
-.field label{ display:block; font-family:'IBM Plex Mono',monospace; font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; margin-bottom:8px; opacity:.75; }
-input[type="text"],input[type="number"]{
-  width:100%; padding:13px 14px; border:2px solid var(--ink); background:#fff; color:var(--ink);
-  font:600 .95rem 'Inter',sans-serif; border-radius:0;
-}
-input:focus{ outline:none; box-shadow:4px 4px 0 var(--red); position:relative; }
-.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-
-.filebox{ position:relative; border:2px dashed var(--ink); padding:22px 16px; text-align:center; background:#fff; }
-.filebox .ft{ font-family:'IBM Plex Mono',monospace; font-size:.76rem; letter-spacing:.06em; text-transform:uppercase; }
-.filebox .fn{ margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:.78rem; color:var(--blue); font-weight:600; }
-.filebox input[type="file"]{ position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; height:100%; }
-
-.note{ margin-top:18px; padding:12px 14px; border-left:4px solid var(--blue); background:#fff; font-size:.84rem; line-height:1.55; opacity:.85; }
-
-/* ============ BUTTONS ============ */
-.btnrow{ display:flex; gap:16px; flex-wrap:wrap; margin-top:4px; }
-.btn{
-  font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase;
-  padding:15px 24px; border:2px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer;
-  box-shadow:5px 5px 0 var(--ink); transition:transform .12s, box-shadow .12s; flex:1; min-width:150px;
-}
-.btn:hover{ transform:translate(-2px,-2px); box-shadow:7px 7px 0 var(--ink); }
-.btn:active{ transform:translate(0,0); box-shadow:2px 2px 0 var(--ink); }
-.btn-primary{ background:var(--ink); color:#fff; }
-.btn-danger{ background:var(--red); color:#fff; border-color:var(--ink); }
-
-/* ============ STATS ============ */
-.statgrid{ display:grid; grid-template-columns:repeat(4,1fr); border:2px solid var(--ink); margin-top:26px; }
-.statgrid div{ padding:16px 8px; text-align:center; border-right:2px solid var(--ink); }
-.statgrid div:last-child{ border-right:none; }
-.statgrid strong{ display:block; font-family:'Archivo Black',sans-serif; font-size:1.6rem; }
-.statgrid span{ font-family:'IBM Plex Mono',monospace; font-size:.66rem; letter-spacing:.08em; text-transform:uppercase; opacity:.65; }
-.senderline{ margin-top:16px; font-family:'IBM Plex Mono',monospace; font-size:.8rem; }
-.senderline b{ color:var(--blue); }
-
-/* ============ LOGS ============ */
-.logtab{ display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; background:var(--ink); color:#fff; padding:5px 12px; margin-bottom:-2px; position:relative; z-index:1; }
-.log-box{ height:280px; overflow:auto; background:#fff; border:2px solid var(--ink); padding:16px; font:13px/1.7 'IBM Plex Mono',monospace; }
-
-/* ============ FOOTER ============ */
-.footer{ padding:22px 0 0; font-family:'IBM Plex Mono',monospace; font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; opacity:.55; text-align:center; }
-
-@media(max-width:640px){
-  .grid2{ grid-template-columns:1fr; }
-  .module{ grid-template-columns:52px 1fr; }
-  .module .idx{ font-size:1.5rem; padding:20px 6px; }
-  .module .body{ padding:20px 14px 24px; }
-  .statusstrip{ grid-template-columns:1fr; }
-  .statuscell:first-child{ border-right:none; border-bottom:2px solid var(--ink); }
-  .statgrid{ grid-template-columns:1fr 1fr; }
-  .statgrid div:nth-child(2){ border-right:none; }
-  .statgrid div:nth-child(3){ border-top:2px solid var(--ink); }
-  .statgrid div:nth-child(4){ border-top:2px solid var(--ink); border-right:none; }
-  .btn{ min-width:100%; }
-}
+:root{--violet:#8b2dff;--cyan:#22d3ee;--mint:#00ff9d;--red:#ff4757}
+body{font-family:Poppins,sans-serif;background:#05030a;color:#fff;min-height:100vh}
+.backdrop{position:fixed;inset:0;z-index:-1;background:
+radial-gradient(ellipse at 50% 110%,rgba(139,45,255,.35),transparent 55%),
+radial-gradient(ellipse at 10% 0,rgba(34,211,238,.18),transparent 45%),
+linear-gradient(180deg,#07040d,#12081f 70%,#05020a)}
+.container{max-width:900px;margin:auto;padding:24px 16px 45px}
+h1{text-align:center;font-family:Orbitron;font-size:2.25rem;background:linear-gradient(45deg,var(--cyan),var(--violet),var(--mint));-webkit-background-clip:text;color:transparent;margin-bottom:5px}
+.subtag{text-align:center;color:#c3a8e0;letter-spacing:1px;margin-bottom:18px}
+.pagehead{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+.pagehead .num{color:var(--violet);border:1px solid var(--violet);border-radius:8px;padding:3px 10px}
+.glass-card{background:rgba(20,10,35,.65);backdrop-filter:blur(14px);border:1px solid rgba(139,45,255,.4);border-radius:20px;padding:22px;margin-bottom:18px;box-shadow:0 18px 40px rgba(0,0,0,.45)}
+.status-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.status-card{padding:18px;text-align:center;border:2px solid rgba(34,211,238,.3);border-radius:15px;background:rgba(255,255,255,.05)}
+.status-card.ready,.status-card.running{border-color:var(--mint);background:rgba(0,255,157,.12)}
+.status-card.error{border-color:var(--red);background:rgba(255,71,87,.1)}
+.status-icon{font-size:1.7rem;color:var(--cyan);margin-bottom:8px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.input-group{position:relative}
+.input-group.full{grid-column:1/-1}
+label{display:block;margin-bottom:9px;color:var(--cyan);font-weight:600;font-size:.84rem;text-transform:uppercase;letter-spacing:.8px}
+input,textarea{width:100%;padding:14px 15px;background:rgba(255,255,255,.06);border:2px solid rgba(139,45,255,.35);border-radius:13px;color:#fff;font:15px Poppins}
+input:focus,textarea:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 18px rgba(34,211,238,.25)}
+textarea{min-height:120px;resize:vertical}
+.btnrow{display:flex;gap:13px;flex-wrap:wrap}
+.btn{border:0;padding:15px 25px;border-radius:13px;color:#fff;font:700 14px Orbitron;cursor:pointer;flex:1;min-width:150px}
+.btn-primary{background:linear-gradient(135deg,var(--cyan),#6d28d9)}
+.btn-success{background:linear-gradient(135deg,var(--mint),#00a86b)}
+.btn-danger{background:linear-gradient(135deg,var(--red),#a9001e)}
+.note{padding:13px;border-left:3px solid var(--cyan);background:rgba(34,211,238,.07);border-radius:8px;color:#d7cbea;font-size:.9rem;line-height:1.55;margin-top:14px}
+.log-box{height:300px;overflow:auto;background:rgba(0,0,0,.65);border:1px solid rgba(139,45,255,.4);border-radius:14px;padding:16px;font:13px "Courier New";line-height:1.65;color:#c9a8ff}
+.counter{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}
+.counter div{padding:13px;border-radius:12px;text-align:center;background:rgba(255,255,255,.06);border:1px solid rgba(139,45,255,.3)}
+.counter strong{display:block;font-size:1.25rem;color:var(--mint)}
+@media(max-width:650px){.form-grid{grid-template-columns:1fr}.input-group.full{grid-column:auto}.counter{grid-template-columns:1fr 1fr}h1{font-size:1.65rem}}
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="backdrop"></div>
+<div class="container">
+<h1><i class="fas fa-comment-dots"></i> INSTAGRAM COMMENT PANEL</h1>
+<div class="subtag">CONTROLLED SINGLE-ACCOUNT COMMENT RUNNER</div>
 
-  <div class="masthead">
-    <div class="kicker">Controlled Single-Account Runner</div>
-    <h1>Instagram Comment Panel</h1>
-    <div class="sub">Manual token · Manual post · One-pass execution</div>
-  </div>
+<div class="glass-card">
+<div class="status-grid">
+<div class="status-card error" id="tokenCard"><i class="fas fa-key status-icon"></i><b>Session</b><br><span id="tokenStatus">❌ Missing</span></div>
+<div class="status-card error" id="runCard"><i class="fas fa-play status-icon"></i><b>Comments</b><br><span id="runStatus">🔴 Stopped</span></div>
+</div>
+</div>
 
-  <div class="statusstrip">
-    <div class="statuscell"><span class="label">Session</span><span class="tag error" id="tokenCard"><span id="tokenStatus">❌ Missing</span></span></div>
-    <div class="statuscell"><span class="label">Comments</span><span class="tag error" id="runCard"><span id="runStatus">🔴 Stopped</span></span></div>
-  </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">01</span><h2>Session Token</h2></div>
+<label>Session Token</label>
+<input id="tokenInput" type="text" placeholder="Paste session token">
+<div class="btnrow" style="margin-top:14px"><button class="btn btn-success" onclick="setToken()">SET TOKEN</button></div>
+<div class="note">Comments are sent only from the authenticated account. The panel does not rotate accounts or impersonate another username.</div>
+</div>
 
-  <div class="module">
-    <div class="idx">01</div>
-    <div class="body">
-      <h2>Session Token</h2>
-      <div class="field">
-        <label>Session Token</label>
-        <input id="tokenInput" type="text" placeholder="Paste session token">
-      </div>
-      <div class="btnrow"><button class="btn btn-primary" onclick="setToken()">Set Token</button></div>
-      <div class="note">Comments are sent only from the authenticated account. The panel does not rotate accounts or impersonate another username.</div>
-    </div>
-  </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">02</span><h2>Post Comment Tool</h2></div>
+<div class="form-grid">
+<div class="input-group full">
+<label>Post ID / Post URL</label>
+<input id="postId" placeholder="12345678901234567 or https://instagram.com/p/SHORTCODE/ or https://instagram.com/reel/SHORTCODE/">
+</div>
+<div class="input-group">
+<label>Target Post Owner (optional)</label>
+<input id="ownerName" placeholder="@username">
+</div>
+<div class="input-group">
+<label>Delay Between Comments (10–3600 sec)</label>
+<input id="commentDelay" type="number" value="15" min="10" max="3600">
+</div>
+<div class="input-group full">
+<label>upload.txt — One comment per line</label>
+<input id="commentsFile" type="file" accept=".txt,text/plain">
+</div>
+</div>
+<div class="note">Each non-empty TXT line is treated as one comment. Duplicate lines are removed. The current controlled run loads up to 50 unique comments and processes them once.</div>
+</div>
 
-  <div class="module">
-    <div class="idx">02</div>
-    <div class="body">
-      <h2>Post Comment Tool</h2>
-      <div class="field">
-        <label>Post ID / Post URL</label>
-        <input id="postId" placeholder="12345678901234567 or https://instagram.com/p/SHORTCODE/ or https://instagram.com/reel/SHORTCODE/">
-      </div>
-      <div class="grid2">
-        <div class="field">
-          <label>Target Post Owner (optional)</label>
-          <input id="ownerName" placeholder="@username">
-        </div>
-        <div class="field">
-          <label>Delay Between Comments (10–3600 sec)</label>
-          <input id="commentDelay" type="number" value="15" min="10" max="3600">
-        </div>
-      </div>
-      <div class="field">
-        <label>upload.txt — One comment per line</label>
-        <div class="filebox">
-          <div class="ft">Select .txt file</div>
-          <div class="fn" id="dzFileName"></div>
-          <input id="commentsFile" type="file" accept=".txt,text/plain">
-        </div>
-      </div>
-      <div class="note">Each non-empty TXT line is treated as one comment. Duplicate lines are removed. The current controlled run loads up to 50 unique comments and processes them once.</div>
-    </div>
-  </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">03</span><h2>Controls & Stats</h2></div>
+<div class="btnrow">
+<button class="btn btn-primary" onclick="startComments()">START COMMENTS</button>
+<button class="btn btn-danger" onclick="stopComments()">STOP COMMENTS</button>
+</div>
+<div class="counter">
+<div><strong id="loaded">0</strong>Loaded</div>
+<div><strong id="sent">0</strong>Sent</div>
+<div><strong id="failed">0</strong>Failed</div>
+<div><strong id="uptime">00:00</strong>Uptime</div>
+</div>
+<div class="note">Sender: <b id="sender">—</b></div>
+</div>
 
-  <div class="module">
-    <div class="idx">03</div>
-    <div class="body">
-      <h2>Controls &amp; Stats</h2>
-      <div class="btnrow">
-        <button class="btn btn-primary" onclick="startComments()">Start Comments</button>
-        <button class="btn btn-danger" onclick="stopComments()">Stop Comments</button>
-      </div>
-      <div class="statgrid">
-        <div><strong id="loaded">0</strong><span>Loaded</span></div>
-        <div><strong id="sent">0</strong><span>Sent</span></div>
-        <div><strong id="failed">0</strong><span>Failed</span></div>
-        <div><strong id="uptime">00:00</strong><span>Uptime</span></div>
-      </div>
-      <div class="senderline">Sender: <b id="sender">—</b></div>
-    </div>
-  </div>
-
-  <div class="module" style="border-bottom:4px solid var(--ink)">
-    <div class="idx">04</div>
-    <div class="body">
-      <h2>Live Logs</h2>
-      <div class="logtab">Live</div>
-      <div class="log-box" id="logs">Panel ready. Set a session token to begin.</div>
-    </div>
-  </div>
-
-  <div class="footer">Instagram Comment Panel — one-pass controlled execution</div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">04</span><h2>Live Logs</h2></div>
+<div class="log-box" id="logs">Panel ready. Set a session token to begin.</div>
+</div>
 </div>
 
 <script>
-/* cosmetic-only: show selected filename (does not affect startComments()) */
-const _cf = document.getElementById('commentsFile');
-if(_cf){
-  _cf.addEventListener('change', () => {
-    const f = _cf.files[0];
-    document.getElementById('dzFileName').textContent = f ? f.name : '';
-  });
-}
-
 function setToken(){
  const token=document.getElementById('tokenInput').value.trim();
  if(!token)return alert('❌ Token paste करें!');
  const fd=new FormData();fd.append('token',token);
  fetch('/set_token',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
    alert(d.message||d.error);
-   if(d.message){document.getElementById('tokenCard').className='tag ready';document.getElementById('tokenStatus').textContent='✅ Ready';}
+   if(d.message){document.getElementById('tokenCard').className='status-card ready';document.getElementById('tokenStatus').textContent='✅ Ready';}
  }).catch(e=>alert('❌ '+e.message));
 }
 function startComments(){
@@ -453,7 +356,7 @@ function update(){
    const t=d.uptime||0;
    document.getElementById('uptime').textContent=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
    document.getElementById('runStatus').textContent=d.running?'🟢 Running':'🔴 Stopped';
-   document.getElementById('runCard').className=d.running?'tag running':'tag error';
+   document.getElementById('runCard').className=d.running?'status-card running':'status-card error';
  });
  fetch('/logs').then(r=>r.json()).then(d=>{
    const b=document.getElementById('logs');b.innerHTML=(d.logs||[]).join('<br>');b.scrollTop=b.scrollHeight;
