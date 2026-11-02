@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -8,12 +9,13 @@ from instagrapi.exceptions import TwoFactorRequired, ChallengeRequired, BadPassw
 
 app = Flask(__name__)
 
-BOT_THREAD = None
-STOP_EVENT = threading.Event()
+COMMENT_THREAD = None
+COMMENT_STOP_EVENT = threading.Event()
+COMMENT_START_TIME = 0
+COMMENT_STATS = {"sent": 0, "failed": 0, "loaded": 0, "sender": ""}
+
 LOGS = []
 SESSION_TOKEN = ""
-start_time = 0
-total_welcomes = 0
 
 def log(msg):
     timestamp = datetime.now().strftime('%H:%M:%S')
@@ -32,76 +34,89 @@ def login_client_token(token):
             return cl
     except Exception as e:
         log(f"⚠️ Token error: {e}")
-        return None
+    return None
 
-def login_client_username_pass(username, password):
-    cl = Client()
-    try:
-        cl.login(username, password)
-        cl.dump_settings("session.json")
-        log("✅ Username/Password login successful!")
-        return cl
-    except Exception as e:
-        log(f"⚠️ Login error: {e}")
-        return None
+def _parse_comment_lines(raw_bytes):
+    text = raw_bytes.decode("utf-8-sig", errors="replace")
+    return [line.strip() for line in text.splitlines() if line.strip()]
 
-def run_bot(token, username, password, welcome_messages, group_ids, delay, poll_interval, use_custom_name):
-    global total_welcomes
-    cl = login_client_token(token)
+def _resolve_post_media(cl, post_id):
+    value = (post_id or "").strip()
+    if not value:
+        raise ValueError("Post ID / URL required")
+
+    # Numeric media PK
+    if value.isdigit():
+        return cl.media_info(int(value))
+
+    # Instagram post/reel/IGTV URL or shortcode.
+    # Query strings such as ?utm_source=... must not become part of the shortcode.
+    match = re.search(r"/(?:p|reel|tv)/([^/?#]+)/?", value, re.IGNORECASE)
+    if match:
+        shortcode = match.group(1).strip()
+    else:
+        # Allow a bare shortcode, but reject a full URL that does not contain
+        # a supported Instagram media path.
+        if "://" in value:
+            raise ValueError("Unsupported Instagram URL. Use /p/, /reel/, or /tv/ URL.")
+        shortcode = value.strip().strip("/").split("?")[0].split("#")[0]
+
+    if not shortcode:
+        raise ValueError("Invalid post ID / URL")
+
+    media_pk = cl.media_pk_from_code(shortcode)
+    return cl.media_info(media_pk)
+
+def run_comment_sender(session_token, post_id, owner_name, comments, delay):
+    global COMMENT_STATS
+
+    cl = login_client_token(session_token)
     if not cl:
-        cl = login_client_username_pass(username, password)
-    
-    if not cl:
-        log("🛑 Login failed!")
+        log("🛑 Comment login failed!")
         return
 
-    log("🤖 ULTRA AUTO WELCOME BOT ACTIVATED!")
-    known_members = {}
-    for gid in group_ids:
-        try:
-            group = cl.direct_thread(gid)
-            known_members[gid] = {user.pk for user in group.users}
-            log(f"📊 Group {gid}: {len(known_members[gid])} tracked")
-        except Exception as e:
-            log(f"⚠️ Group {gid}: {e}")
-            known_members[gid] = set()
+    try:
+        sender = cl.account_info().username
+        COMMENT_STATS["sender"] = sender
+        media = _resolve_post_media(cl, post_id)
+        actual_owner = getattr(getattr(media, "user", None), "username", "") or ""
 
-    while not STOP_EVENT.is_set():
-        try:
-            for gid in group_ids:
-                if STOP_EVENT.is_set(): break
-                try:
-                    group = cl.direct_thread(gid)
-                    current_members = {user.pk for user in group.users}
-                    new_members = current_members - known_members[gid]
+        if owner_name and actual_owner.lower() != owner_name.lstrip("@").strip().lower():
+            log(f"⚠️ Owner mismatch: post belongs to @{actual_owner}, not @{owner_name.lstrip('@').strip()}")
+            return
 
-                    if new_members:
-                        for user in group.users:
-                            if user.pk in new_members and user.username != cl.account_info().username:
-                                if STOP_EVENT.is_set(): break
-                                for msg in welcome_messages:
-                                    if STOP_EVENT.is_set(): break
-                                    final_msg = f"@{user.username} {msg}" if use_custom_name else msg
-                                    cl.direct_send(final_msg, thread_ids=[gid])
-                                    total_welcomes += 1
-                                    log(f"🎉 [{total_welcomes}] @{user.username} → {gid}")
-                                    log(f"📤 '{final_msg[:50]}...'")
-                                    for _ in range(delay):
-                                        if STOP_EVENT.is_set(): break
-                                        time.sleep(1)
-                                known_members[gid].add(user.pk)
-                    known_members[gid] = current_members
-                except Exception as e:
-                    log(f"⚠️ Group {gid}: {e}")
-            if STOP_EVENT.is_set(): break
-            log(f"⏳ Scanning... {poll_interval}s")
-            for _ in range(poll_interval):
-                if STOP_EVENT.is_set(): break
-                time.sleep(1)
-        except Exception as e:
-            log(f"⚠️ Loop error: {e}")
-            time.sleep(10)
-    log(f"🛑 Stopped. Total welcomes: {total_welcomes}")
+        log(f"🎯 Post verified: @{actual_owner or 'unknown'}")
+        log(f"📦 Loaded {len(comments)} unique comment(s)")
+        log(f"👤 Sending as authenticated account: @{sender}")
+
+        for index, comment in enumerate(comments, 1):
+            if COMMENT_STOP_EVENT.is_set():
+                log("🛑 Comment sender stopped by user.")
+                break
+
+            try:
+                cl.media_comment(media.pk, comment)
+                COMMENT_STATS["sent"] += 1
+                log(f"💬 [{index}/{len(comments)}] Sent: {comment[:80]}")
+            except Exception as e:
+                COMMENT_STATS["failed"] += 1
+                log(f"⚠️ [{index}/{len(comments)}] Failed: {e}")
+                if "feedback_required" in str(e).lower() or "rate" in str(e).lower():
+                    log("🛑 Instagram rate/feedback limit detected; stopping safely.")
+                    break
+
+            if index < len(comments):
+                wait_for = max(10, int(delay))
+                log(f"⏳ Waiting {wait_for}s before next comment...")
+                for _ in range(wait_for):
+                    if COMMENT_STOP_EVENT.is_set():
+                        break
+                    time.sleep(1)
+
+    except Exception as e:
+        log(f"⚠️ Comment worker error: {e}")
+    finally:
+        log(f"🏁 Comment run finished. Sent: {COMMENT_STATS['sent']}, Failed: {COMMENT_STATS['failed']}")
 
 @app.route("/")
 def index():
@@ -113,715 +128,248 @@ def set_token():
     token = request.form.get("token", "").strip()
     if token:
         SESSION_TOKEN = token
-        log(f"🔑 Token activated: {token[:20]}...")
+        log("🔑 Session token activated.")
         return jsonify({"message": "✅ Token ready!"})
     return jsonify({"error": "Empty token!"})
 
-@app.route("/start", methods=["POST"])
-def start_bot():
-    global BOT_THREAD, STOP_EVENT, start_time
-    if BOT_THREAD and BOT_THREAD.is_alive():
-        return jsonify({"message": "⚙️ Bot running!"})
-    
+@app.route("/comment_start", methods=["POST"])
+def comment_start():
+    global COMMENT_THREAD, COMMENT_STOP_EVENT, COMMENT_START_TIME, COMMENT_STATS
+
+    if COMMENT_THREAD and COMMENT_THREAD.is_alive():
+        return jsonify({"message": "⚙️ Comment sender already running."})
+
     token = SESSION_TOKEN
-    username = request.form.get("username", "")
-    password = request.form.get("password", "")
-    welcome_raw = request.form.get("welcome", "")
-    welcome_messages = [m.strip() for m in welcome_raw.splitlines() if m.strip()]
-    group_ids = [g.strip() for g in request.form.get("group_ids", "").split(",") if g.strip()]
-    delay = int(request.form.get("delay", 3))
-    poll_interval = int(request.form.get("poll", 10))
-    use_custom_name = request.form.get("use_custom_name") == "yes"
+    post_id = request.form.get("post_id", "").strip()
+    owner_name = request.form.get("owner_name", "").strip()
+    try:
+        delay = max(10, min(3600, int(request.form.get("comment_delay", 15))))
+    except ValueError:
+        delay = 15
 
-    if not welcome_messages or not group_ids:
-        return jsonify({"message": "⚠️ Messages & Groups required!"})
-    if not token and not (username and password):
-        return jsonify({"message": "❌ Token OR credentials required!"})
+    uploaded = request.files.get("comments_file")
+    if not token:
+        return jsonify({"message": "❌ First set a session token."})
+    if not post_id:
+        return jsonify({"message": "❌ Post ID / URL required."})
+    if not uploaded or not uploaded.filename:
+        return jsonify({"message": "❌ Upload a TXT file."})
 
-    STOP_EVENT.clear()
-    start_time = time.time()
-    BOT_THREAD = threading.Thread(target=run_bot, args=(token, username, password, welcome_messages, group_ids, delay, poll_interval, use_custom_name), daemon=True)
-    BOT_THREAD.start()
-    log("🚀 ULTRA BOT LIVE!")
-    return jsonify({"message": "✅ Monitoring new members..."})
+    try:
+        comments = _parse_comment_lines(uploaded.read())
+    except Exception as e:
+        return jsonify({"message": f"❌ TXT read error: {e}"})
 
-@app.route("/stop", methods=["POST"])
-def stop_bot():
-    global BOT_THREAD, STOP_EVENT
-    STOP_EVENT.set()
-    log("🛑 Emergency stop!")
-    if BOT_THREAD:
-        BOT_THREAD.join(timeout=10)
-    log("✅ Bot terminated!")
-    return jsonify({"message": "✅ Bot stopped!"})
+    # One-pass controlled run; duplicate lines are removed.
+    unique_comments = []
+    seen = set()
+    for item in comments:
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique_comments.append(item)
+
+    if not unique_comments:
+        return jsonify({"message": "❌ No comments found in TXT."})
+
+    # Keep the safe one-pass limit from the previous version.
+    unique_comments = unique_comments[:50]
+
+    COMMENT_STATS = {"sent": 0, "failed": 0, "loaded": len(unique_comments), "sender": ""}
+    COMMENT_STOP_EVENT.clear()
+    COMMENT_START_TIME = time.time()
+
+    COMMENT_THREAD = threading.Thread(
+        target=run_comment_sender,
+        args=(token, post_id, owner_name, unique_comments, delay),
+        daemon=True
+    )
+    COMMENT_THREAD.start()
+
+    log(f"🚀 Comment run started with {len(unique_comments)} comment(s).")
+    return jsonify({"message": f"✅ Started. {len(unique_comments)} comment(s) loaded."})
+
+@app.route("/comment_stop", methods=["POST"])
+def comment_stop():
+    COMMENT_STOP_EVENT.set()
+    log("🛑 Comment stop requested.")
+    return jsonify({"message": "✅ Comment sender stopped."})
+
+@app.route("/comment_stats")
+def comment_stats():
+    uptime = int(time.time() - COMMENT_START_TIME) if COMMENT_START_TIME else 0
+    return jsonify({
+        "running": bool(COMMENT_THREAD and COMMENT_THREAD.is_alive()),
+        "uptime": uptime,
+        "sent": COMMENT_STATS["sent"],
+        "failed": COMMENT_STATS["failed"],
+        "loaded": COMMENT_STATS["loaded"],
+        "sender": COMMENT_STATS["sender"]
+    })
 
 @app.route("/logs")
 def get_logs():
-    return jsonify({"logs": LOGS[-50:], "token_set": bool(SESSION_TOKEN), "welcomes": total_welcomes})
-
-@app.route("/status")
-def status():
-    uptime = 0
-    if start_time:
-        uptime = int(time.time() - start_time)
-    return jsonify({
-        "token_ready": bool(SESSION_TOKEN),
-        "bot_running": BOT_THREAD and BOT_THREAD.is_alive() if BOT_THREAD else False,
-        "log_count": len(LOGS),
-        "uptime": uptime,
-        "welcomes": total_welcomes
-    })
+    return jsonify({"logs": LOGS[-100:], "token_set": bool(SESSION_TOKEN)})
 
 PAGE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>🚀 ULTRA WELCOME BOT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🚀 INSTAGRAM COMMENT PANEL</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-:root{
-    --violet:#8b2dff;
-    --violet-glow:rgba(139,45,255,0.55);
-    --violet-dim:rgba(139,45,255,0.25);
-    --cyan:#22d3ee;
-    --mint:#00ff9d;
-}
-
-html,body{height:100%;}
-body {
-    font-family: 'Poppins', sans-serif;
-    background: #05030a;
-    color: #fff;
-    min-height: 100vh;
-    overflow-x: hidden;
-    position:relative;
-}
-
-/* ===== CINEMATIC ALIEN-OVERLORD BACKDROP ===== */
-.backdrop{position:fixed;inset:0;z-index:0;overflow:hidden;background:
-    radial-gradient(ellipse at 50% 115%,rgba(139,45,255,0.35) 0%,rgba(40,10,80,0.14) 35%,transparent 60%),
-    radial-gradient(ellipse at 15% -10%,rgba(34,211,238,0.18) 0%,transparent 45%),
-    linear-gradient(180deg,#07040d 0%,#0a0614 40%,#12081f 75%,#05020a 100%);
-}
-.backdrop svg{position:absolute;bottom:-2%;left:50%;transform:translateX(-50%);width:140%;max-width:1600px;opacity:0.5;filter:drop-shadow(0 0 60px rgba(139,45,255,0.35));}
-.skyline{position:absolute;bottom:0;left:0;width:100%;height:20%;display:flex;align-items:flex-end;gap:2px;opacity:0.5;z-index:1;}
-.skyline span{display:block;background:linear-gradient(180deg,#160a24,#02000100);flex:1;box-shadow:inset 0 0 20px rgba(139,45,255,0.18);}
-.mist{position:absolute;border-radius:50%;background:radial-gradient(circle,rgba(60,15,110,0.5),transparent 70%);filter:blur(18px);animation:drift 24s linear infinite;}
-.mist.m1{width:420px;height:420px;top:5%;left:-10%;animation-duration:32s;}
-.mist.m2{width:520px;height:520px;top:18%;right:-15%;animation-duration:27s;animation-delay:-8s;}
-.mist.m3{width:340px;height:340px;bottom:5%;left:20%;animation-duration:35s;animation-delay:-14s;}
-@keyframes drift{0%{transform:translate(0,0) scale(1);}50%{transform:translate(40px,-30px) scale(1.15);}100%{transform:translate(0,0) scale(1);}}
-.sparks{position:absolute;inset:0;pointer-events:none;}
-.sparks i{position:absolute;bottom:-5%;width:3px;height:3px;background:#22d3ee;border-radius:50%;box-shadow:0 0 8px 2px rgba(34,211,238,0.85);animation:rise linear infinite;}
-@keyframes rise{0%{transform:translateY(0) translateX(0);opacity:0;}10%{opacity:1;}100%{transform:translateY(-110vh) translateX(20px);opacity:0;}}
-.pulse-flash{position:fixed;inset:0;background:rgba(139,45,255,0.3);opacity:0;pointer-events:none;z-index:2;animation:flash 9s infinite;}
-@keyframes flash{0%,93%,100%{opacity:0;}93.3%{opacity:0.5;}93.6%{opacity:0;}94%{opacity:0.3;}94.3%{opacity:0;}}
-
-.container {
-    position:relative;z-index:3;
-    max-width: 780px;
-    margin: 0 auto;
-    padding: 22px 16px 40px;
-}
-
-h1 {
-    text-align: center;
-    font-family: 'Orbitron', monospace;
-    font-size: 2.5rem;
-    font-weight: 700;
-    background: linear-gradient(45deg, var(--cyan), var(--violet), var(--mint));
-    background-size:200% 200%;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 6px;
-    text-shadow: 0 0 30px rgba(139, 45, 255, 0.35);
-    animation: hueflow 6s ease infinite;
-}
-@keyframes hueflow{0%,100%{background-position:0% 50%;}50%{background-position:100% 50%;}}
-h1 i{-webkit-text-fill-color:var(--violet);filter:drop-shadow(0 0 10px var(--violet-glow));}
-
-.subtag{text-align:center;color:#c3a8e0;font-size:0.82rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:16px;}
-
-.pagedots{display:flex;justify-content:center;gap:9px;margin:6px 0 18px;}
-.pagedots span{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,0.15);border:1px solid rgba(139,45,255,0.45);transition:all .3s;cursor:pointer;}
-.pagedots span.on{background:var(--violet);box-shadow:0 0 10px var(--violet-glow);transform:scale(1.2);}
-
-/* ===== BOOK / PAGE FLIP ===== */
-.book{position:relative;perspective:2400px;}
-.page{
-    position:relative;
-    transform-origin:center;
-    transition:transform .55s cubic-bezier(.4,.2,.2,1), opacity .45s ease;
-    display:none;
-    backface-visibility:hidden;
-}
-.page.active{display:block;transform:rotateY(0deg);opacity:1;}
-.page.leave-next{transform:rotateY(-100deg);opacity:0;}
-.page.leave-prev{transform:rotateY(100deg);opacity:0;}
-.page.enter-from-next{transform:rotateY(100deg);opacity:0;}
-.page.enter-from-prev{transform:rotateY(-100deg);opacity:0;}
-
-.pagehead{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
-.pagehead .num{
-    font-family:'Orbitron',monospace;font-size:1rem;color:var(--violet);
-    border:1px solid var(--violet-dim);border-radius:8px;padding:2px 10px;box-shadow:0 0 10px var(--violet-dim) inset;
-}
-.pagehead h2{font-size:1rem;letter-spacing:1.5px;text-transform:uppercase;color:#e6d6ff;font-weight:700;}
-
-/* ===== GLASS CARD ===== */
-.glass-card {
-    background: rgba(20, 10, 35, 0.55);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
-    border-radius: 20px;
-    padding: 22px;
-    border: 1px solid rgba(139, 45, 255, 0.35);
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 0 24px rgba(139,45,255,0.1);
-    position: relative;
-    overflow: hidden;
-    margin-bottom: 18px;
-}
-
-.glass-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--cyan), var(--violet), var(--mint));
-    background-size: 300% 100%;
-    animation: shimmer 3s infinite;
-}
-
-@keyframes shimmer {
-    0% { background-position: 0% 0; }
-    50% { background-position: 100% 0; }
-    100% { background-position: 0% 0; }
-}
-
-.status-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 14px;
-    margin-bottom: 4px;
-}
-
-.status-card {
-    background: rgba(255, 255, 255, 0.06);
-    border-radius: 16px;
-    padding: 20px 10px;
-    text-align: center;
-    border: 2px solid rgba(34, 211, 238, 0.3);
-    transition: all 0.3s ease;
-}
-
-.status-card.ready {
-    border-color: #00ff9d;
-    background: rgba(0, 255, 157, 0.15);
-}
-
-.status-card.running {
-    border-color: #00ff9d;
-    background: rgba(0, 255, 157, 0.22);
-    animation: statuspulse 2s infinite;
-}
-
-@keyframes statuspulse {
-    0% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0.6); }
-    70% { box-shadow: 0 0 0 16px rgba(0, 255, 157, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(0, 255, 157, 0); }
-}
-
-.status-card.error {
-    border-color: #ff4757;
-    background: rgba(255, 71, 87, 0.18);
-}
-
-.status-icon {
-    font-size: 2rem;
-    margin-bottom: 10px;
-    display: block;
-    color: var(--cyan);
-}
-
-.token-box {
-    background: rgba(0, 255, 157, 0.1);
-    border: 2px solid #00ff9d;
-    border-radius: 18px;
-    padding: 24px;
-    margin-bottom: 4px;
-    text-align: center;
-}
-.token-box h3{color:#7cffce;margin-bottom:14px;font-size:1rem;}
-
-.form-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 18px;
-}
-
-.input-group { position: relative; }
-
-.input-group label {
-    display: block;
-    margin-bottom: 10px;
-    color: var(--cyan);
-    font-weight: 600;
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-
-input, textarea, select {
-    width: 100%;
-    padding: 15px 16px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 2px solid rgba(139, 45, 255, 0.35);
-    border-radius: 14px;
-    color: #fff;
-    font-size: 15px;
-    font-family: 'Poppins', sans-serif;
-    transition: all 0.3s ease;
-    box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.25);
-}
-
-input:focus, textarea:focus, select:focus {
-    outline: none;
-    border-color: var(--cyan);
-    background: rgba(255, 255, 255, 0.1);
-    box-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
-}
-
-textarea { resize: vertical; min-height: 130px; }
-
-select {
-    cursor: pointer;
-    appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 15px center;
-    background-size: 18px;
-    padding-right: 45px;
-}
-
-.full-width { grid-column: 1 / -1; }
-
-.btn {
-    border: none;
-    padding: 16px 30px;
-    font-size: 15px;
-    font-weight: 700;
-    border-radius: 14px;
-    color: white;
-    cursor: pointer;
-    transition: all 0.25s ease;
-    text-transform: uppercase;
-    letter-spacing: 1.2px;
-    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
-    font-family: 'Orbitron', monospace;
-    flex:1;min-width:130px;
-}
-
-.btn:hover { transform: translateY(-3px); filter:brightness(1.1); }
-.btn:active { transform: translateY(-1px); }
-
-.btn-success { background: linear-gradient(135deg, #00ff9d, #00b36b); box-shadow:0 0 20px rgba(0,255,157,0.45),0 8px 20px rgba(0,0,0,0.4); }
-.btn-primary { background: linear-gradient(135deg, var(--cyan), #6d28d9); font-size: 16px; box-shadow:0 0 20px rgba(139,45,255,0.5),0 8px 20px rgba(0,0,0,0.4); }
-.btn-danger { background: linear-gradient(135deg, #ff4757, #b8001f); box-shadow:0 0 20px rgba(255,71,87,0.5),0 8px 20px rgba(0,0,0,0.4); }
-.btn-sample { background: linear-gradient(135deg, #3a3f47, #181b1f); border:1px solid #55595f; }
-
-.buttons {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 14px;
-}
-
-.log-section {
-    background: rgba(0, 0, 0, 0.4);
-    border-radius: 18px;
-    padding: 22px;
-    border: 2px solid rgba(34, 211, 238, 0.3);
-}
-
-.log-section h3 {
-    text-align: center;
-    margin-bottom: 16px;
-    color: var(--cyan);
-    font-size: 1.15rem;
-    font-weight: 600;
-}
-
-.log-box {
-    background: rgba(0, 0, 0, 0.8);
-    border-radius: 14px;
-    padding: 18px;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    height: min(50vh, 350px);
-    overflow-y: auto;
-    border: 1px solid rgba(139, 45, 255, 0.4);
-    box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.5), 0 0 18px rgba(139,45,255,0.12);
-    color:#c9a8ff;
-    text-shadow:0 0 6px rgba(139,45,255,0.3);
-}
-
-.log-box::-webkit-scrollbar { width: 8px; }
-.log-box::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.4); border-radius: 4px; }
-.log-box::-webkit-scrollbar-thumb { background: var(--violet); border-radius: 4px; }
-.log-box::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
-
-/* ===== NAV ===== */
-.navrow{display:flex;justify-content:space-between;gap:12px;margin-top:16px;}
-.navbtn{
-    flex:1;padding:15px 18px;border-radius:14px;border:1px solid var(--violet);
-    background:linear-gradient(135deg,rgba(139,45,255,0.25),rgba(30,5,60,0.35));
-    color:#e6d6ff;font-weight:700;letter-spacing:0.5px;cursor:pointer;
-    display:flex;align-items:center;justify-content:center;gap:8px;
-    box-shadow:0 0 16px rgba(139,45,255,0.35);transition:all .25s;
-    font-family:'Orbitron',monospace;font-size:0.8rem;text-transform:uppercase;
-}
-.navbtn:hover{box-shadow:0 0 26px rgba(139,45,255,0.6);transform:translateY(-2px);}
-.navbtn:disabled{opacity:0.25;cursor:not-allowed;box-shadow:none;transform:none;}
-
-@media (max-width: 480px) {
-    .status-grid { grid-template-columns: 1fr 1fr; }
-    .btn{width:100%;}
-}
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--violet:#8b2dff;--cyan:#22d3ee;--mint:#00ff9d;--red:#ff4757}
+body{font-family:Poppins,sans-serif;background:#05030a;color:#fff;min-height:100vh}
+.backdrop{position:fixed;inset:0;z-index:-1;background:
+radial-gradient(ellipse at 50% 110%,rgba(139,45,255,.35),transparent 55%),
+radial-gradient(ellipse at 10% 0,rgba(34,211,238,.18),transparent 45%),
+linear-gradient(180deg,#07040d,#12081f 70%,#05020a)}
+.container{max-width:900px;margin:auto;padding:24px 16px 45px}
+h1{text-align:center;font-family:Orbitron;font-size:2.25rem;background:linear-gradient(45deg,var(--cyan),var(--violet),var(--mint));-webkit-background-clip:text;color:transparent;margin-bottom:5px}
+.subtag{text-align:center;color:#c3a8e0;letter-spacing:1px;margin-bottom:18px}
+.pagehead{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+.pagehead .num{color:var(--violet);border:1px solid var(--violet);border-radius:8px;padding:3px 10px}
+.glass-card{background:rgba(20,10,35,.65);backdrop-filter:blur(14px);border:1px solid rgba(139,45,255,.4);border-radius:20px;padding:22px;margin-bottom:18px;box-shadow:0 18px 40px rgba(0,0,0,.45)}
+.status-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.status-card{padding:18px;text-align:center;border:2px solid rgba(34,211,238,.3);border-radius:15px;background:rgba(255,255,255,.05)}
+.status-card.ready,.status-card.running{border-color:var(--mint);background:rgba(0,255,157,.12)}
+.status-card.error{border-color:var(--red);background:rgba(255,71,87,.1)}
+.status-icon{font-size:1.7rem;color:var(--cyan);margin-bottom:8px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.input-group{position:relative}
+.input-group.full{grid-column:1/-1}
+label{display:block;margin-bottom:9px;color:var(--cyan);font-weight:600;font-size:.84rem;text-transform:uppercase;letter-spacing:.8px}
+input,textarea{width:100%;padding:14px 15px;background:rgba(255,255,255,.06);border:2px solid rgba(139,45,255,.35);border-radius:13px;color:#fff;font:15px Poppins}
+input:focus,textarea:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 18px rgba(34,211,238,.25)}
+textarea{min-height:120px;resize:vertical}
+.btnrow{display:flex;gap:13px;flex-wrap:wrap}
+.btn{border:0;padding:15px 25px;border-radius:13px;color:#fff;font:700 14px Orbitron;cursor:pointer;flex:1;min-width:150px}
+.btn-primary{background:linear-gradient(135deg,var(--cyan),#6d28d9)}
+.btn-success{background:linear-gradient(135deg,var(--mint),#00a86b)}
+.btn-danger{background:linear-gradient(135deg,var(--red),#a9001e)}
+.note{padding:13px;border-left:3px solid var(--cyan);background:rgba(34,211,238,.07);border-radius:8px;color:#d7cbea;font-size:.9rem;line-height:1.55;margin-top:14px}
+.log-box{height:300px;overflow:auto;background:rgba(0,0,0,.65);border:1px solid rgba(139,45,255,.4);border-radius:14px;padding:16px;font:13px "Courier New";line-height:1.65;color:#c9a8ff}
+.counter{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px}
+.counter div{padding:13px;border-radius:12px;text-align:center;background:rgba(255,255,255,.06);border:1px solid rgba(139,45,255,.3)}
+.counter strong{display:block;font-size:1.25rem;color:var(--mint)}
+@media(max-width:650px){.form-grid{grid-template-columns:1fr}.input-group.full{grid-column:auto}.counter{grid-template-columns:1fr 1fr}h1{font-size:1.65rem}}
 </style>
 </head>
 <body>
-<div class="backdrop">
-    <div class="mist m1"></div>
-    <div class="mist m2"></div>
-    <div class="mist m3"></div>
-    <svg viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
-        <path fill="#170a26" d="M60,420 C40,300 90,260 70,190 C55,140 110,120 130,150 C145,100 190,95 205,140 C230,90 280,95 290,150 C310,110 360,120 365,170 C400,120 450,130 455,180 C480,140 530,150 530,200 C560,160 610,175 605,225 C640,200 690,215 680,260 C710,250 745,275 730,320 C750,340 745,390 720,420 Z"/>
-        <circle cx="205" cy="150" r="7" fill="#22d3ee" opacity="0.85"/>
-        <circle cx="290" cy="160" r="6" fill="#22d3ee" opacity="0.7"/>
-    </svg>
-    <div class="skyline">
-        <span style="height:40%"></span><span style="height:65%"></span><span style="height:30%"></span>
-        <span style="height:80%"></span><span style="height:45%"></span><span style="height:70%"></span>
-        <span style="height:35%"></span><span style="height:90%"></span><span style="height:50%"></span>
-        <span style="height:60%"></span><span style="height:25%"></span><span style="height:75%"></span>
-        <span style="height:40%"></span><span style="height:55%"></span><span style="height:85%"></span>
-    </div>
-    <div class="sparks" id="sparks"></div>
-</div>
-<div class="pulse-flash"></div>
-
+<div class="backdrop"></div>
 <div class="container">
-    <h1><i class="fas fa-robot"></i> AUTO WELCOME BOT</h1>
-    <div class="subtag">🚀 ULTRA WELCOME BOT</div>
+<h1><i class="fas fa-comment-dots"></i> INSTAGRAM COMMENT PANEL</h1>
+<div class="subtag">CONTROLLED SINGLE-ACCOUNT COMMENT RUNNER</div>
 
-    <div class="pagedots">
-        <span class="dot on" data-i="1"></span>
-        <span class="dot" data-i="2"></span>
-        <span class="dot" data-i="3"></span>
-        <span class="dot" data-i="4"></span>
-    </div>
+<div class="glass-card">
+<div class="status-grid">
+<div class="status-card error" id="tokenCard"><i class="fas fa-key status-icon"></i><b>Session</b><br><span id="tokenStatus">❌ Missing</span></div>
+<div class="status-card error" id="runCard"><i class="fas fa-play status-icon"></i><b>Comments</b><br><span id="runStatus">🔴 Stopped</span></div>
+</div>
+</div>
 
-    <div class="book" id="book">
+<div class="glass-card">
+<div class="pagehead"><span class="num">01</span><h2>Session Token</h2></div>
+<label>Session Token</label>
+<input id="tokenInput" type="text" placeholder="Paste session token">
+<div class="btnrow" style="margin-top:14px"><button class="btn btn-success" onclick="setToken()">SET TOKEN</button></div>
+<div class="note">Comments are sent only from the authenticated account. The panel does not rotate accounts or impersonate another username.</div>
+</div>
 
-        <!-- PAGE 1: STATUS + TOKEN -->
-        <section class="page active" data-page="1">
-            <div class="glass-card">
-                <div class="status-grid" id="statusGrid">
-                    <div class="status-card error" id="tokenCard">
-                        <i class="fas fa-key status-icon"></i>
-                        <strong>Token</strong><br>
-                        <span id="tokenStatus">❌ Missing</span>
-                    </div>
-                    <div class="status-card error" id="botCard">
-                        <i class="fas fa-play status-icon"></i>
-                        <strong>Bot</strong><br>
-                        <span id="botStatus">🔴 Stopped</span>
-                    </div>
-                    <div class="status-card">
-                        <i class="fas fa-users status-icon"></i>
-                        <strong>Welcomes</strong><br>
-                        <span id="welcomeCount">0</span>
-                    </div>
-                    <div class="status-card">
-                        <i class="fas fa-clock status-icon"></i>
-                        <strong>Uptime</strong><br>
-                        <span id="uptime">00:00:00</span>
-                    </div>
-                </div>
-            </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">02</span><h2>Post Comment Tool</h2></div>
+<div class="form-grid">
+<div class="input-group full">
+<label>Post ID / Post URL</label>
+<input id="postId" placeholder="12345678901234567 or https://instagram.com/p/SHORTCODE/ or https://instagram.com/reel/SHORTCODE/">
+</div>
+<div class="input-group">
+<label>Target Post Owner (optional)</label>
+<input id="ownerName" placeholder="@username">
+</div>
+<div class="input-group">
+<label>Delay Between Comments (10–3600 sec)</label>
+<input id="commentDelay" type="number" value="15" min="10" max="3600">
+</div>
+<div class="input-group full">
+<label>upload.txt — One comment per line</label>
+<input id="commentsFile" type="file" accept=".txt,text/plain">
+</div>
+</div>
+<div class="note">Each non-empty TXT line is treated as one comment. Duplicate lines are removed. The current controlled run loads up to 50 unique comments and processes them once.</div>
+</div>
 
-            <div class="glass-card token-box">
-                <h3><i class="fas fa-paste"></i> Paste Token Here</h3>
-                <form id="tokenForm">
-                    <div class="input-group full-width">
-                        <label>Session Token</label>
-                        <input type="text" id="tokenInput" name="token" placeholder="56748960230%3AF8ELTyGZTkSadW...">
-                    </div>
-                    <button type="button" class="btn btn-success" onclick="setToken()">
-                        <i class="fas fa-check"></i> SET TOKEN
-                    </button>
-                </form>
-                <div id="tokenStatusText" style="margin-top: 10px; color: #00ff9d;"></div>
-            </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">03</span><h2>Controls & Stats</h2></div>
+<div class="btnrow">
+<button class="btn btn-primary" onclick="startComments()">START COMMENTS</button>
+<button class="btn btn-danger" onclick="stopComments()">STOP COMMENTS</button>
+</div>
+<div class="counter">
+<div><strong id="loaded">0</strong>Loaded</div>
+<div><strong id="sent">0</strong>Sent</div>
+<div><strong id="failed">0</strong>Failed</div>
+<div><strong id="uptime">00:00</strong>Uptime</div>
+</div>
+<div class="note">Sender: <b id="sender">—</b></div>
+</div>
 
-            <div class="navrow">
-                <button type="button" class="navbtn" disabled><i class="fas fa-chevron-left"></i> Previous</button>
-                <button type="button" class="navbtn" onclick="goPage(2)">Next <i class="fas fa-chevron-right"></i></button>
-            </div>
-        </section>
-
-        <!-- PAGE 2: CONFIG -->
-        <section class="page" data-page="2">
-            <div class="pagehead"><span class="num">02</span><h2>Bot Configuration</h2></div>
-
-            <form id="botForm">
-                <div class="glass-card">
-                    <div class="form-grid">
-                        <div class="input-group">
-                            <label><i class="fas fa-user"></i> Username (Optional)</label>
-                            <input type="text" name="username" placeholder="@username">
-                        </div>
-
-                        <div class="input-group">
-                            <label><i class="fas fa-lock"></i> Password (Optional)</label>
-                            <input type="password" name="password" placeholder="••••••••">
-                        </div>
-
-                        <div class="input-group full-width">
-                            <label><i class="fas fa-comment-dots"></i> Welcome Messages</label>
-                            <textarea name="welcome" placeholder="Welcome @username!&#10;Glad you're here!&#10;Say hello everyone!"></textarea>
-                        </div>
-
-                        <div class="input-group full-width">
-                            <label><i class="fas fa-users"></i> Group IDs</label>
-                            <input type="text" name="group_ids" placeholder="24632887389663044, 123456789">
-                        </div>
-
-                        <div class="input-group">
-                            <label><i class="fas fa-user-tag"></i> Mention Username?</label>
-                            <select name="use_custom_name">
-                                <option value="yes">✅ Yes (@username)</option>
-                                <option value="no">❌ No</option>
-                            </select>
-                        </div>
-
-                        <div class="input-group">
-                            <label><i class="fas fa-stopwatch"></i> Delay (seconds)</label>
-                            <input type="number" name="delay" value="3" min="1">
-                        </div>
-
-                        <div class="input-group">
-                            <label><i class="fas fa-sync"></i> Check Interval</label>
-                            <input type="number" name="poll" value="10" min="5">
-                        </div>
-                    </div>
-                </div>
-            </form>
-
-            <div class="navrow">
-                <button type="button" class="navbtn" onclick="goPage(1)"><i class="fas fa-chevron-left"></i> Previous</button>
-                <button type="button" class="navbtn" onclick="goPage(3)">Next <i class="fas fa-chevron-right"></i></button>
-            </div>
-        </section>
-
-        <!-- PAGE 3: CONTROLS -->
-        <section class="page" data-page="3">
-            <div class="pagehead"><span class="num">03</span><h2>Controls</h2></div>
-
-            <div class="glass-card">
-                <div class="buttons">
-                    <button type="button" class="btn btn-primary" onclick="startBot()" id="startBtn" disabled>
-                        <i class="fas fa-rocket"></i> START BOT
-                    </button>
-                    <button type="button" class="btn btn-danger" onclick="stopBot()">
-                        <i class="fas fa-stop"></i> STOP BOT
-                    </button>
-                    <button type="button" class="btn btn-sample" onclick="downloadSample()">
-                        <i class="fas fa-download"></i> SAMPLE
-                    </button>
-                </div>
-            </div>
-
-            <div class="navrow">
-                <button type="button" class="navbtn" onclick="goPage(2)"><i class="fas fa-chevron-left"></i> Previous</button>
-                <button type="button" class="navbtn" onclick="goPage(4)">Next <i class="fas fa-chevron-right"></i></button>
-            </div>
-        </section>
-
-        <!-- PAGE 4: LOGS -->
-        <section class="page" data-page="4">
-            <div class="pagehead"><span class="num">04</span><h2>Live Logs</h2></div>
-
-            <div class="glass-card log-section">
-                <h3><i class="fas fa-terminal"></i> Live Logs</h3>
-                <div class="log-box" id="logs">Bot ready! Paste token and start monitoring...</div>
-            </div>
-
-            <div class="navrow">
-                <button type="button" class="navbtn" onclick="goPage(3)"><i class="fas fa-chevron-left"></i> Previous</button>
-                <button type="button" class="navbtn" disabled>Next <i class="fas fa-chevron-right"></i></button>
-            </div>
-        </section>
-
-    </div>
+<div class="glass-card">
+<div class="pagehead"><span class="num">04</span><h2>Live Logs</h2></div>
+<div class="log-box" id="logs">Panel ready. Set a session token to begin.</div>
+</div>
 </div>
 
 <script>
-let tokenSet = false;
-let startTime = 0;
-
-// ---- decorative floating sparks ----
-(function(){
-    const box = document.getElementById('sparks');
-    for(let i=0;i<24;i++){
-        const e = document.createElement('i');
-        e.style.left = (Math.random()*100)+'%';
-        e.style.animationDuration = (6+Math.random()*8)+'s';
-        e.style.animationDelay = (Math.random()*8)+'s';
-        box.appendChild(e);
-    }
-})();
-
-// ---- book page navigation ----
-let currentPage = 1;
-function goPage(target){
-    if(target === currentPage) return;
-    const dir = target > currentPage ? 'next' : 'prev';
-    const curEl = document.querySelector('.page[data-page="'+currentPage+'"]');
-    const nextEl = document.querySelector('.page[data-page="'+target+'"]');
-
-    curEl.classList.add(dir === 'next' ? 'leave-next' : 'leave-prev');
-    nextEl.style.display = 'block';
-    nextEl.classList.add(dir === 'next' ? 'enter-from-next' : 'enter-from-prev');
-    void nextEl.offsetWidth;
-
-    requestAnimationFrame(() => {
-        nextEl.classList.add('active');
-        nextEl.classList.remove('enter-from-next','enter-from-prev');
-    });
-
-    setTimeout(() => {
-        curEl.classList.remove('active','leave-next','leave-prev');
-        curEl.style.display = 'none';
-        currentPage = target;
-        document.querySelectorAll('.pagedots .dot').forEach(d => {
-            d.classList.toggle('on', parseInt(d.dataset.i) === currentPage);
-        });
-        window.scrollTo({top:0, behavior:'smooth'});
-    }, 560);
+function setToken(){
+ const token=document.getElementById('tokenInput').value.trim();
+ if(!token)return alert('❌ Token paste करें!');
+ const fd=new FormData();fd.append('token',token);
+ fetch('/set_token',{method:'POST',body:fd}).then(r=>r.json()).then(d=>{
+   alert(d.message||d.error);
+   if(d.message){document.getElementById('tokenCard').className='status-card ready';document.getElementById('tokenStatus').textContent='✅ Ready';}
+ }).catch(e=>alert('❌ '+e.message));
 }
-document.querySelectorAll('.pagedots .dot').forEach(d => {
-    d.addEventListener('click', () => goPage(parseInt(d.dataset.i)));
-});
-
-function setToken() {
-    const token = document.getElementById('tokenInput').value.trim();
-    if(!token) return alert('❌ Token paste करें!');
-    
-    const form = new FormData();
-    form.append('token', token);
-    
-    fetch('/set_token', {method: 'POST', body: form})
-    .then(res => res.json())
-    .then(data => {
-        if(data.message) {
-            document.getElementById('tokenStatusText').innerHTML = '✅ Token set!';
-            tokenSet = true;
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('tokenCard').className = 'status-card ready';
-            document.getElementById('tokenStatus').innerHTML = '✅ Ready';
-            alert('✅ Token activated!');
-        } else {
-            alert('❌ ' + (data.error || 'Token error'));
-        }
-    }).catch(e => alert('❌ Error: ' + e.message));
+function startComments(){
+ const file=document.getElementById('commentsFile').files[0];
+ if(!file)return alert('❌ upload.txt select करें!');
+ const fd=new FormData();
+ fd.append('post_id',document.getElementById('postId').value.trim());
+ fd.append('owner_name',document.getElementById('ownerName').value.trim());
+ fd.append('comment_delay',document.getElementById('commentDelay').value);
+ fd.append('comments_file',file);
+ fetch('/comment_start',{method:'POST',body:fd}).then(r=>r.json()).then(d=>alert(d.message)).catch(e=>alert('❌ '+e.message));
 }
-
-function startBot() {
-    if(!tokenSet) return alert('❌ पहले Token set करें!');
-    const form = new FormData(document.getElementById('botForm'));
-    
-    fetch('/start', {method: 'POST', body: form})
-    .then(res => res.json())
-    .then(data => {
-        alert(data.message);
-        if(data.message.includes('✅')) {
-            document.getElementById('botCard').className = 'status-card running';
-            document.getElementById('botStatus').innerHTML = '🟢 Running';
-            startTime = Date.now();
-        }
-    }).catch(e => alert('❌ ' + e.message));
+function stopComments(){
+ fetch('/comment_stop',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message));
 }
-
-function stopBot() {
-    fetch('/stop', {method: 'POST'})
-    .then(res => res.json())
-    .then(data => {
-        alert(data.message);
-        document.getElementById('botCard').className = 'status-card error';
-        document.getElementById('botStatus').innerHTML = '🔴 Stopped';
-    }).catch(e => alert('❌ Error'));
+function update(){
+ fetch('/comment_stats').then(r=>r.json()).then(d=>{
+   document.getElementById('loaded').textContent=d.loaded||0;
+   document.getElementById('sent').textContent=d.sent||0;
+   document.getElementById('failed').textContent=d.failed||0;
+   document.getElementById('sender').textContent=d.sender?'@'+d.sender:'—';
+   const t=d.uptime||0;
+   document.getElementById('uptime').textContent=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
+   document.getElementById('runStatus').textContent=d.running?'🟢 Running':'🔴 Stopped';
+   document.getElementById('runCard').className=d.running?'status-card running':'status-card error';
+ });
+ fetch('/logs').then(r=>r.json()).then(d=>{
+   const b=document.getElementById('logs');b.innerHTML=(d.logs||[]).join('<br>');b.scrollTop=b.scrollHeight;
+ });
 }
-
-function fetchLogs() {
-    fetch('/logs')
-    .then(res => res.json())
-    .then(data => {
-        const box = document.getElementById('logs');
-        box.innerHTML = data.logs.join('<br>');
-        box.scrollTop = box.scrollHeight;
-        document.getElementById('welcomeCount').textContent = data.welcomes || 0;
-    });
-}
-
-function updateStatus() {
-    fetch('/status')
-    .then(res => res.json())
-    .then(data => {
-        document.getElementById('tokenStatus').textContent = data.token_ready ? '✅ Ready' : '❌ Missing';
-        document.getElementById('botStatus').textContent = data.bot_running ? '🟢 Live' : '🔴 Stopped';
-        
-        if(data.uptime > 0) {
-            const total = Math.floor(data.uptime);
-            const h = Math.floor(total / 3600);
-            const m = Math.floor((total % 3600) / 60);
-            const s = total % 60;
-            document.getElementById('uptime').textContent = 
-                `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-        }
-    });
-}
-
-function downloadSample() {
-    const text = "Welcome @username! 🎉\
-Glad you're here! 👋\
-Introduce yourself! 💬\
-Stay active 24x7! 🔥";
-    const blob = new Blob([text], {type: 'text/plain'});
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'welcome.txt';
-    link.click();
-}
-
-setInterval(fetchLogs, 2000);
-setInterval(updateStatus, 3000);
-updateStatus();
+setInterval(update,2000);update();
 </script>
 </body>
 </html>
 """
 
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print("🚀 SMOOTH WELCOME BOT - No lag, perfect scroll!")
+    print("🚀 INSTAGRAM COMMENT PANEL - ready")
     app.run(host="0.0.0.0", port=port, debug=False)
